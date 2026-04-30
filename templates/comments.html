@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><title>Comments</title></head>
+<body>
+    <form method="post" action="/comments">
+        <textarea name="text" rows="4" cols="50"></textarea><br>
+        <button type="submit">Send</button>
+    </form>
+    <h2>Comments:</h2>
+    <ul>
+        {% for comment in comments %}
+            <li>{{ comment }}</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
