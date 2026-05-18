@@ -12,18 +12,14 @@ def login(username, password):
 def test_idor():
     alice = login("alice", "alice123")
     assert alice is not None
-    # Алиса не должна видеть файл Боба
     resp = alice.get(f"{BASE_URL}/files/2")
     assert resp.status_code == 404
-    # Алиса видит свой файл
     resp = alice.get(f"{BASE_URL}/files/1")
     assert resp.status_code == 200
-    # Админ удаляет файл Боба
     admin = login("admin", "admin123")
     assert admin is not None
     resp = admin.delete(f"{BASE_URL}/files/2")
     assert resp.status_code == 200
-    # Боб проверяет, что его файл удалён
     bob = login("bob", "bob123")
     assert bob is not None
     resp = bob.get(f"{BASE_URL}/files/my")
@@ -43,4 +39,4 @@ def test_admin_all_files():
     resp = admin.get(f"{BASE_URL}/files/all")
     assert resp.status_code == 200
     files = resp.json()
-    assert len(files) == 2   # после удаления файла 2, осталось 2 файла
+    assert len(files) == 2   
