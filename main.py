@@ -2,9 +2,13 @@ import os
 import secrets
 import uuid
 import filetype
+from dotenv import load_dotenv
+from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, UploadFile, File
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
+
+load_dotenv()
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=secrets.token_urlsafe(32))
@@ -13,6 +17,11 @@ MAX_FILE_SIZE = 2 * 1024 * 1024
 STORAGE_DIR = "storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+if not ENCRYPTION_KEY:
+    raise RuntimeError("ENCRYPTION_KEY not set in .env")
+cipher = Fernet(ENCRYPTION_KEY.encode())
+
 users_db = {
     "alice": {"username": "alice", "role": "user", "password": "alice123"},
     "bob":   {"username": "bob",   "role": "user", "password": "bob123"},
@@ -20,9 +29,9 @@ users_db = {
 }
 
 files_db = [
-    {"id": 1, "original_name": "report_alice.pdf", "owner": "alice", "size": 1024, "path": None, "uploaded_at": None},
-    {"id": 2, "original_name": "photo_bob.jpg",    "owner": "bob",   "size": 2048, "path": None, "uploaded_at": None},
-    {"id": 3, "original_name": "admin_keys.txt",   "owner": "admin", "size": 12,   "path": None, "uploaded_at": None},
+    {"id": 1, "original_name": "report_alice.pdf", "owner": "alice", "size": 1024, "path": None, "uploaded_at": None, "is_encrypted": False},
+    {"id": 2, "original_name": "photo_bob.jpg",    "owner": "bob",   "size": 2048, "path": None, "uploaded_at": None, "is_encrypted": False},
+    {"id": 3, "original_name": "admin_keys.txt",   "owner": "admin", "size": 12,   "path": None, "uploaded_at": None, "is_encrypted": False},
 ]
 next_file_id = 4
 
@@ -82,38 +91,37 @@ def delete_file(file: dict = Depends(check_file_permissions)):
 async def upload_file(
     request: Request,
     file: UploadFile = File(...),
+    encrypt: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
-    total_size = 0
-    chunk_size = 1024 * 1024
+    file_content = await file.read()
+    total_size = len(file_content)
+    if total_size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 2 MB)")
+
+    if encrypt:
+        data_to_save = cipher.encrypt(file_content)
+    else:
+        data_to_save = file_content
+
     file_uuid = str(uuid.uuid4())
     temp_path = os.path.join(STORAGE_DIR, file_uuid)
-
     try:
         with open(temp_path, "wb") as buffer:
-            while True:
-                chunk = await file.read(chunk_size)
-                if not chunk:
-                    break
-                total_size += len(chunk)
-                if total_size > MAX_FILE_SIZE:
-                    os.remove(temp_path)
-                    raise HTTPException(status_code=413, detail="File too large (max 2 MB)")
-                buffer.write(chunk)
-    except HTTPException:
-        raise
+            buffer.write(data_to_save)
     except Exception:
         if os.path.exists(temp_path):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail="Upload failed")
 
-    with open(temp_path, "rb") as f:
-        head = f.read(2048)
-    kind = filetype.guess(head)
-    allowed_mimes = ["image/jpeg", "image/png"]
-    if kind is None or kind.mime not in allowed_mimes:
-        os.remove(temp_path)
-        raise HTTPException(status_code=400, detail="Only JPEG and PNG images are allowed")
+    if not encrypt:
+        with open(temp_path, "rb") as f:
+            head = f.read(2048)
+        kind = filetype.guess(head)
+        allowed_mimes = ["image/jpeg", "image/png"]
+        if kind is None or kind.mime not in allowed_mimes:
+            os.remove(temp_path)
+            raise HTTPException(status_code=400, detail="Only JPEG and PNG images are allowed")
 
     global next_file_id
     new_id = next_file_id
@@ -126,10 +134,11 @@ async def upload_file(
         "size": total_size,
         "path": file_uuid,
         "uploaded_at": None,
+        "is_encrypted": encrypt,
     }
     files_db.append(new_file_record)
 
-    return {"msg": "File uploaded", "file_id": new_id, "original_name": file.filename}
+    return {"msg": "File uploaded", "file_id": new_id, "original_name": file.filename, "encrypted": encrypt}
 
 @app.get("/files/{file_id}/download")
 def download_file(
@@ -139,16 +148,29 @@ def download_file(
 ):
     if not file_record["path"]:
         raise HTTPException(status_code=404, detail="File not found on disk")
+
     file_path = os.path.join(STORAGE_DIR, file_record["path"])
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
-    return FileResponse(
-        path=file_path,
-        filename=file_record["original_name"],
+
+    with open(file_path, "rb") as f:
+        stored_data = f.read()
+
+    if file_record.get("is_encrypted", False):
+        try:
+            decrypted_data = cipher.decrypt(stored_data)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Decryption failed")
+        return_data = decrypted_data
+    else:
+        return_data = stored_data
+
+    return Response(
+        content=return_data,
         media_type="application/octet-stream",
         headers={"Content-Disposition": f"attachment; filename=\"{file_record['original_name']}\""}
     )
 
 @app.get("/")
 def root():
-    return {"message": "Welcome to Secure File Storage"}
+    return {"message": "Welcome to Secure Encrypted File Storage"}
