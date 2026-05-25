@@ -6,4 +6,3 @@ repos:
         args: ["-r", ".", "--exclude=venv", "-ll"]
         files: \.py$
         pass_filenames: false
-        

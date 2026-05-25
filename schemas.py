@@ -6,5 +6,4 @@ app = FastAPI(title="Corporate File Manager", description="Фейс-контро
 
 @app.post("/registration")
 async def register(user_data: UserCreate):
-    # Если данные прошли валидацию Pydantic (а они прошли, иначе 422)
     return {"msg": "User created", "user": user_data.username}

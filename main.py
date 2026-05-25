@@ -40,9 +40,9 @@ def cause_error():
     return 1 / 0
 
 users_db = {
-    "alice": {"username": "alice", "role": "user", "password": "alice123"},
-    "bob":   {"username": "bob",   "role": "user", "password": "bob123"},
-    "admin": {"username": "admin", "role": "admin", "password": "admin123"},
+    "alice": {"username": "alice", "role": "user", "password": "alice123"}, # nosec
+    "bob":   {"username": "bob",   "role": "user", "password": "bob123"}, # nosec
+    "admin": {"username": "admin", "role": "admin", "password": "admin123"}, # nosec
 }
 
 files_db = [
