@@ -1,4 +1,4 @@
-name: Security Check
+name: My Security Check
 
 on:
   push:
