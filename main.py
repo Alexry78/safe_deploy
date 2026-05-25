@@ -7,8 +7,11 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
+from logger_config import setup_logger
 
 load_dotenv()
+
+logger = setup_logger("safe_deploy")
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=secrets.token_urlsafe(32))
@@ -19,8 +22,22 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 if not ENCRYPTION_KEY:
+    logger.critical("ENCRYPTION_KEY not set in .env")
     raise RuntimeError("ENCRYPTION_KEY not set in .env")
 cipher = Fernet(ENCRYPTION_KEY.encode())
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "We are sorry, something went wrong."}
+    )
+
+@app.get("/cause_error")
+def cause_error():
+    logger.info("Test endpoint /cause_error called")
+    return 1 / 0
 
 users_db = {
     "alice": {"username": "alice", "role": "user", "password": "alice123"},
@@ -46,6 +63,7 @@ def check_file_permissions(file_id: int, current_user: dict = Depends(get_curren
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     if not (file["owner"] == current_user["username"] or current_user["role"] == "admin"):
+        logger.warning(f"Access denied: User '{current_user['username']}' tried to access file {file_id} (owner: {file['owner']})")
         raise HTTPException(status_code=404, detail="File not found")
     return file
 
@@ -53,24 +71,31 @@ def check_file_permissions(file_id: int, current_user: dict = Depends(get_curren
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
     user = users_db.get(username)
     if not user or user["password"] != password:
+        logger.warning(f"Failed login attempt for username: {username} from {request.client.host}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     request.session["user"] = {"username": user["username"], "role": user["role"]}
+    logger.info(f"User '{username}' logged in successfully from {request.client.host}")
     return JSONResponse(content={"msg": "Login successful"})
 
 @app.post("/logout")
 def logout(request: Request):
+    user = request.session.get("user")
+    if user:
+        logger.info(f"User '{user['username']}' logged out")
     request.session.clear()
     return {"msg": "Logged out"}
 
 @app.get("/files/my")
 def get_my_files(current_user: dict = Depends(get_current_user)):
     my_files = [f for f in files_db if f["owner"] == current_user["username"]]
+    logger.info(f"User '{current_user['username']}' listed their files ({len(my_files)} items)")
     return my_files
 
 @app.get("/files/all")
 def get_all_files(current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
+    logger.info(f"Admin '{current_user['username']}' listed all files")
     return files_db
 
 @app.get("/files/{file_id}")
@@ -85,6 +110,7 @@ def delete_file(file: dict = Depends(check_file_permissions)):
         if os.path.exists(file_path):
             os.remove(file_path)
     files_db = [f for f in files_db if f["id"] != file["id"]]
+    logger.info(f"File deleted: id={file['id']}, name={file['original_name']}, owner={file['owner']}")
     return {"msg": "File deleted"}
 
 @app.post("/files/upload")
@@ -97,10 +123,12 @@ async def upload_file(
     file_content = await file.read()
     total_size = len(file_content)
     if total_size > MAX_FILE_SIZE:
+        logger.warning(f"User '{current_user['username']}' tried to upload file larger than limit: {total_size} bytes")
         raise HTTPException(status_code=413, detail="File too large (max 2 MB)")
 
     if encrypt:
         data_to_save = cipher.encrypt(file_content)
+        logger.info(f"Encrypting file '{file.filename}' (size: {total_size})")
     else:
         data_to_save = file_content
 
@@ -109,7 +137,8 @@ async def upload_file(
     try:
         with open(temp_path, "wb") as buffer:
             buffer.write(data_to_save)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to save file '{file.filename}': {e}", exc_info=True)
         if os.path.exists(temp_path):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail="Upload failed")
@@ -121,6 +150,7 @@ async def upload_file(
         allowed_mimes = ["image/jpeg", "image/png"]
         if kind is None or kind.mime not in allowed_mimes:
             os.remove(temp_path)
+            logger.warning(f"User '{current_user['username']}' tried to upload invalid file type: {file.filename}")
             raise HTTPException(status_code=400, detail="Only JPEG and PNG images are allowed")
 
     global next_file_id
@@ -138,6 +168,7 @@ async def upload_file(
     }
     files_db.append(new_file_record)
 
+    logger.info(f"File uploaded: id={new_id}, name={file.filename}, owner={current_user['username']}, encrypted={encrypt}")
     return {"msg": "File uploaded", "file_id": new_id, "original_name": file.filename, "encrypted": encrypt}
 
 @app.get("/files/{file_id}/download")
@@ -159,12 +190,14 @@ def download_file(
     if file_record.get("is_encrypted", False):
         try:
             decrypted_data = cipher.decrypt(stored_data)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Decryption failed for file {file_id}: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Decryption failed")
         return_data = decrypted_data
     else:
         return_data = stored_data
 
+    logger.info(f"File downloaded: id={file_id}, name={file_record['original_name']}, owner={file_record['owner']}, user={current_user['username']}")
     return Response(
         content=return_data,
         media_type="application/octet-stream",
@@ -173,4 +206,5 @@ def download_file(
 
 @app.get("/")
 def root():
+    logger.info("Root endpoint accessed")
     return {"message": "Welcome to Secure Encrypted File Storage"}
