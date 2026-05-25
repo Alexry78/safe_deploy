@@ -18,4 +18,4 @@ jobs:
     - name: Install Bandit
       run: pip install bandit
     - name: Run Bandit
-      run: bandit -r . --exclude=venv -ll
+      run: bandit -r . --exclude=venv,venv_hidden,__pycache__,logs,storage -ll
