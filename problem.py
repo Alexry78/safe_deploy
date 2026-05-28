@@ -1,2 +1,2 @@
-#import hashlib
-#hashlib.md5(b"test")
+import hashlib # nosec
+hashlib.md5(b"test") # nosec
